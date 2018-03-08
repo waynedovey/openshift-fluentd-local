@@ -1,0 +1,121 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logging-fluentd
+  namespace: logging
+data:
+  filter-applications.conf: |-
+    <filter transform.log>
+      type record_transformer
+      enable_ruby
+      <record>
+        namespace ${kubernetes['namespace_name']}
+        pod_name ${kubernetes['pod_name']}
+        container ${kubernetes['container_name']}
+        team ${kubernetes['labels']['team']}
+      </record>
+      remove_keys docker,kubernetes,systemd,level,pipeline_metadata,viaq_index_name,@timestamp
+    </filter>
+
+    <filter transform.log>
+      @type record_transformer
+      enable_ruby
+      <record>
+        message ${record["message"].gsub(/\"/, '')}
+      </record>
+    </filter>
+  fluent.conf: |-
+
+    @include configs.d/openshift/system.conf
+
+    @include configs.d/openshift/input-pre-*.conf
+    @include configs.d/dynamic/input-docker-*.conf
+    @include configs.d/dynamic/input-syslog-*.conf
+    @include configs.d/openshift/input-post-*.conf
+
+    <label @INGRESS>
+      @include configs.d/openshift/filter-pre-*.conf
+      @include configs.d/openshift/filter-retag-journal.conf
+      @include configs.d/openshift/filter-k8s-meta.conf
+      @include configs.d/openshift/filter-kibana-transform.conf
+      @include configs.d/openshift/filter-k8s-flatten-hash.conf
+      @include configs.d/openshift/filter-k8s-record-transform.conf
+      @include configs.d/openshift/filter-syslog-record-transform.conf
+      @include configs.d/openshift/filter-viaq-data-model.conf
+      @include configs.d/openshift/filter-post-*.conf
+
+      @include configs.d/openshift/output-pre-*.conf
+      @include configs.d/user/output-operations.conf
+      @include configs.d/user/output-transform.conf
+    </label>
+
+    @include configs.d/user/input-applications.conf
+    @include configs.d/user/filter-applications.conf
+    @include configs.d/user/output-applications.conf
+  input-applications.conf: |-
+    <source>
+      @type tail
+      path /var/log/splunk_archive/transform.log
+      pos_file /var/log/splunk_archive/transform.log.pos
+      tag transform.log
+      format json
+    </source>
+  output-applications.conf: |-
+    <match transform.log>
+       @type copy
+       @include ../user/output-extra-applications.conf
+    </match>
+  output-extra-applications.conf: |-
+    <store>
+        @type file
+        path /var/log/splunk_archive/applications.*.log
+        time_slice_format %Y%m%d
+        time_slice_wait 10m
+        time_format '%F %T%z.%L'
+        symlink_path /var/log/splunk/applications.log
+        append true
+        compress gzip
+        buffer_type file
+        buffer_path /var/log/splunk_archive/*.applications.buffer
+        format ltsv
+        label_delimiter "="
+        delimiter ","
+    </store>
+            
+  output-extra-transform.conf: |2-
+      <store>
+        @type file
+        path /var/log/splunk_archive/transform.*.log
+        time_slice_format %Y%m%d
+        time_slice_wait 10m
+        time_format '%F %T%z.%L'
+        symlink_path /var/log/splunk_archive/transform.log
+        append true
+        compress gzip
+        buffer_type file
+        buffer_path /var/log/splunk_archive/*.transform.buffer
+        format json
+      </store>
+  output-operations.conf: |-
+    <match journal.system** audit.log**>
+      @type copy
+      @include ../user/output-ops-extra-*.conf
+    </match>
+  output-ops-extra-latest.conf: |2-
+      <store>
+        @type file
+        path /var/log/splunk_archive/ops.*.log
+        time_slice_format %Y%m%d
+        time_slice_wait 10m
+        time_format '%F %T%z.%L'
+        symlink_path /var/log/splunk/ops.log
+        append true
+        compress gzip
+        buffer_type file
+        buffer_path /var/log/splunk_archive/*.ops.buffer
+      </store>
+  output-transform.conf: |-
+    <match **>
+       @type copy
+       @include ../user/output-extra-transform.conf
+    </match>
